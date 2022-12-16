@@ -208,7 +208,11 @@ pub const CustomWidget = packed struct {
 
 	pub fn new() CustomWidget {
 		const ptr = gtk.g_object_new(CustomWidget.gType(), "property name", property_value, @as(?*anyopaque, null));
-		return unsafeCastPtr(CustomWidget, ptr.?);
+		return unsafeCastPtrNonNull(CustomWidget, ptr.?);
 	}
 };
 ```
+
+## LICENSE
+
+GPL v3
