@@ -16,7 +16,7 @@ pub fn activate(app: Application) void {
 
 pub fn main() void {
     var app = Application.new("org.gtk.example", .None);
-    app.callMethod("connect", .{ "activate", &activate, .{}, .{} });
-    app.callMethod("run", .{ @intCast(i32, std.os.argv.len), @ptrCast(?[*:null]?[*:0]u8, std.os.argv.ptr) });
+    _ = app.callMethod("connect", .{ "activate", &activate, .{}, .{} });
+    _ = app.callMethod("run", .{ @intCast(i32, std.os.argv.len), @ptrCast(?[*:null]?[*:0]u8, std.os.argv.ptr) });
     app.callMethod("unref", .{});
 }

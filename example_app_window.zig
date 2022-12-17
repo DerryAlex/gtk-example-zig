@@ -13,11 +13,13 @@ const ScrolledWindow = wrapper.ScrolledWindow;
 const TextView = wrapper.TextView;
 const upCast = wrapper.upCast;
 const unsafeCastPtrNonNull = wrapper.unsafeCastPtrNonNull;
-const onceInitEnter = gtk.g_once_init_enter;
-const onceInitLeave = gtk.g_once_init_leave;
-const objectNew = gtk.g_object_new;
-const ClassInitFunc = gtk.GClassInitFunc;
-const InstanceInitFunc = gtk.GInstanceInitFunc;
+const onceInitEnter = wrapper.onceInitEnter;
+const onceInitLeave = wrapper.onceInitLeave;
+const registerType = wrapper.registerType;
+const ClassInitFunc = wrapper.ClassInitFunc;
+const InstanceInitFunc = wrapper.InstanceInitFunc;
+const GTypeFlags = wrapper.GTypeFlags;
+const newObject = wrapper.newObject;
 
 const ExampleApp = @import("example_app.zig").ExampleApp;
 
@@ -27,10 +29,7 @@ const Static = struct {
 
 const ExampleAppWindowClass = extern struct {
     parent_class: gtk.GtkApplicationWindowClass,
-    // signal begin
-    // signal end
 
-    // class init
     pub fn init(self: *ExampleAppWindowClass) callconv(.C) void {
         gtk.gtk_widget_class_set_template_from_resource(@ptrCast(*gtk.GtkWidgetClass, self), "/org/gtk/exampleapp/window.ui");
         gtk.gtk_widget_class_bind_template_child_full(@ptrCast(*gtk.GtkWidgetClass, self), "stack", @boolToInt(false), @offsetOf(ExampleAppWindowImpl, "stack"));
@@ -39,17 +38,37 @@ const ExampleAppWindowClass = extern struct {
 
 const ExampleAppWindowImpl = extern struct {
     parent: gtk.GtkApplicationWindow,
-    // private begin
     stack: Stack,
-    // private end
 
-    // instance init
     pub fn init(win: ExampleAppWindow) callconv(.C) void {
         win.callMethod("initTemplate", .{});
     }
 
-    pub fn getTypeOnce() GType {
-        return gtk.g_type_register_static_simple(ApplicationWindow.gType(), "ExampleAppWindow", @sizeOf(ExampleAppWindowClass), @ptrCast(ClassInitFunc, &ExampleAppWindowClass.init), @sizeOf(ExampleAppWindowImpl), @ptrCast(InstanceInitFunc, &ExampleAppWindowImpl.init), 0);
+    pub fn new(app: ExampleApp) ExampleAppWindow {
+        // zig fmt: off
+        const ptr = newObject(
+            ExampleAppWindowImpl.gType(),
+            "application", app.instance,
+            @as(?*anyopaque, null)
+        );
+        // zig fmt: on
+        return unsafeCastPtrNonNull(ExampleAppWindow, ptr.?);
+    }
+
+    pub fn gType() GType {
+        if (0 != onceInitEnter(&Static.type_id)) {
+            // zig fmt: off
+            var type_id = registerType(
+                ApplicationWindow.gType(),
+                "ExampleAppWindow",
+                @sizeOf(ExampleAppWindowClass), @ptrCast(ClassInitFunc, &ExampleAppWindowClass.init),
+                @sizeOf(ExampleAppWindowImpl), @ptrCast(InstanceInitFunc, &ExampleAppWindowImpl.init),
+                @enumToInt(GTypeFlags.None)
+            );
+            // zig fmt: on
+            defer onceInitLeave(&Static.type_id, type_id);
+        }
+        return Static.type_id;
     }
 };
 
@@ -71,33 +90,28 @@ pub const ExampleAppWindow = packed struct {
     }
 
     pub fn gType() GType {
-        if (onceInitEnter(&Static.type_id) != 0) {
-            var type_id = ExampleAppWindowImpl.getTypeOnce();
-            onceInitLeave(&Static.type_id, type_id);
-        }
-        return Static.type_id;
+        ExampleAppWindowImpl.gType();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "open")) return true;
-        if (ApplicationWindow.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "open")) return void;
+        if (ApplicationWindow.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: ExampleAppWindow, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: ExampleAppWindow, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "open")) {
             comptime assert(args.len == 1);
             self.open(args[0]);
-        } else if (comptime ApplicationWindow.hasMethod(method)) {
-            upCast(ApplicationWindow, self).callMethod(method, args);
+        } else if (comptime ApplicationWindow.callMethodHelper(method)) |_| {
+            return upCast(ApplicationWindow, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
     }
 
     pub fn new(app: ExampleApp) ExampleAppWindow {
-        const ptr = objectNew(ExampleAppWindow.gType(), "application", app, @as(?*anyopaque, null));
-        return unsafeCastPtrNonNull(ExampleAppWindow, ptr.?);
+        return ExampleAppWindowImpl.new(app);
     }
 
     pub fn open(self: ExampleAppWindow, file: GFile) void {
@@ -117,8 +131,8 @@ pub const ExampleAppWindow = packed struct {
                 buffer.setText(result.Ok.contents.ptr, @intCast(i32, result.Ok.contents.len));
                 gtk.g_free(result.Ok.contents.ptr);
             },
-            .Error => {
-                result.Error.deinit();
+            .Err => {
+                defer result.Err.deinit();
             },
         }
         gtk.g_free(basename);

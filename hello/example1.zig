@@ -24,15 +24,15 @@ pub fn activate(app: Application) void {
     box.callMethod("setValign", .{.Center});
     window.callMethod("setChild", .{box});
     var button = Button.newWithLabel("Hello World");
-    button.callMethod("connect", .{ "clicked", &printHello, .{}, .{ .swapped = true } });
-    button.callMethod("connect", .{ "clicked", &Window.deinit, .{upCast(Window, window)}, .{ .swapped = true } });
+    _ = button.callMethod("connect", .{ "clicked", &printHello, .{}, .{ .swapped = true } });
+    _ = button.callMethod("connect", .{ "clicked", &Window.destroy, .{upCast(Window, window)}, .{ .swapped = true } });
     box.append(button);
     window.callMethod("show", .{});
 }
 
 pub fn main() void {
     var app = Application.new("org.gtk.example", .None);
-    app.callMethod("connect", .{ "activate", &activate, .{}, .{} });
-    app.callMethod("run", .{ @intCast(i32, std.os.argv.len), @ptrCast(?[*:null]?[*:0]u8, std.os.argv.ptr) });
+    _ = app.callMethod("connect", .{ "activate", &activate, .{}, .{} });
+    _ = app.callMethod("run", .{ @intCast(i32, std.os.argv.len), @ptrCast(?[*:null]?[*:0]u8, std.os.argv.ptr) });
     app.callMethod("unref", .{});
 }

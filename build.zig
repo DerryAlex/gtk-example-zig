@@ -9,7 +9,7 @@ pub fn build(b: *Builder) !void {
     var pid = try std.os.fork();
     if (pid == 0) {
         const argv = [_]?[*:0]const u8{ "glib-compile-resources", "exampleapp.gresource.xml", "--target=resources.c", "--generate-source", null };
-        const envp = [_]?[*:0]const u8{ null };
+        const envp = [_]?[*:0]const u8{null};
         var err = std.os.execvpeZ("glib-compile-resources", @ptrCast([*:null]const ?[*:0]u8, &argv), @ptrCast([*:null]const ?[*:0]u8, &envp));
         return err;
     } else {

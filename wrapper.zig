@@ -37,9 +37,7 @@ pub fn unsafeCast(comptime T: type, object: anytype) T {
     comptime assert(isA(GObject)(T) and isA(GObject)(U));
     return T{ .instance = @ptrCast(*T.cType(), @alignCast(@alignOf(*T.cType()), object.instance)) };
 }
-// cast helper end
 
-// pointer cast helper begin
 pub fn fromPtr(comptime T: type, ptr: ?*T.cType()) ?T {
     return if (ptr) |some| T{ .instance = some } else null;
 }
@@ -55,14 +53,10 @@ pub fn unsafeCastPtr(comptime T: type, ptr: ?*anyopaque) ?T {
 pub fn unsafeCastPtrNonNull(comptime T: type, ptr: *anyopaque) T {
     return T{ .instance = @ptrCast(*T.cType(), @alignCast(@alignOf(*T.cType()), ptr)) };
 }
-// pointer cast helper end
+// cast helper end
 
 // closure helper begin
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-pub fn destroyClosures() void {
-    if (gpa.deinit()) @panic("Leak");
-}
 
 fn ZigClosure(comptime T: type, comptime U: type, comptime swapped: bool) type {
     comptime assert(meta.trait.isPtrTo(.Fn)(T));
@@ -79,9 +73,9 @@ fn ZigClosure(comptime T: type, comptime U: type, comptime swapped: bool) type {
                 @call(.{}, self.func, self.args);
             }
         } else struct {
-            const ClassType = @typeInfo(meta.ArgsTuple(meta.Child(T))).Struct.fields[0].field_type;
+            const ObjectType = @typeInfo(meta.ArgsTuple(meta.Child(T))).Struct.fields[0].field_type;
             pub fn invoke(object: GObject, self: *Self) callconv(.C) void {
-                @call(.{}, self.func, .{unsafeCast(ClassType, object)} ++ self.args);
+                @call(.{}, self.func, .{downCast(ObjectType, object).?} ++ self.args);
             }
         };
 
@@ -103,6 +97,18 @@ fn createZigClosure(func: anytype, args: anytype, comptime swapped: bool) *ZigCl
 }
 // closure helper end
 
+// custom widget
+pub const onceInitEnter = gtk.g_once_init_enter;
+pub const onceInitLeave = gtk.g_once_init_leave;
+pub const registerType = gtk.g_type_register_static_simple;
+pub const registerTypeStatic = gtk.g_type_register_static;
+pub const registerTypeDynamic = gtk.g_gtype_register_dynamic;
+pub const registerTypeFundamental = gtk.g_type_register_fundemantal;
+pub const ClassInitFunc = gtk.GClassInitFunc;
+pub const InstanceInitFunc = gtk.GInstanceInitFunc;
+pub const newObject = gtk.g_object_new;
+// custom widget
+
 pub const GApplicationFlags = enum(c_uint) {
     None = gtk.G_APPLICATION_FLAGS_NONE,
     IsService = gtk.G_APPLICATION_IS_SERVICE,
@@ -122,6 +128,13 @@ pub const GConnectFlags = enum(c_uint) {
     After = gtk.G_CONNECT_AFTER,
     Swapped = gtk.G_CONNECT_SWAPPED,
     _,
+};
+
+pub const GTypeFlags = enum(c_uint) {
+    None = gtk.G_TYPE_FLAG_NONE,
+    Abstract = gtk.G_TYPE_FLAG_ABSTRACT,
+    ValueAbstract = gtk.G_TYPE_FLAG_VALUE_ABSTRACT,
+    Final = gtk.G_TYPE_FLAG_FINAL,
 };
 
 pub const Align = enum(c_uint) {
@@ -153,7 +166,9 @@ pub const GError = packed struct {
         return gtk.g_error_get_type();
     }
 
-    pub fn deinit(self: GError) void {
+    pub const deinit = free;
+
+    pub fn free(self: GError) void {
         gtk.g_error_free(self.instance);
     }
 };
@@ -173,20 +188,22 @@ pub const GFile = packed struct {
         return gtk.g_file_get_basename(self.instance);
     }
 
-    const ContentResult = union(enum) {
-        Ok: struct {
+    pub fn loadContents(self: GFile, cancellable: ?GCancellable) union(enum) {
+        Ok: Ok,
+        Err: Err,
+
+        const Ok = struct {
             contents: []u8,
             etag: ?[*:0]u8,
-        },
-        Error: GError,
-    };
+        };
 
-    pub fn loadContents(self: GFile, cancellable: ?GCancellable) ContentResult {
+        const Err = GError;
+    } {
         var contents: ?[*]u8 = null;
         var length: usize = 0;
         var etag: ?[*:0]u8 = null;
         var error_instance: ?*GError.cType() = null;
-        return if (0 == gtk.g_file_load_contents(self.instance, toPtr(GCancellable, cancellable), &contents, &length, &etag, &error_instance)) ContentResult{ .Error = fromPtr(GError, error_instance).? } else ContentResult{ .Ok = .{ .contents = contents.?[0..length], .etag = etag } };
+        return if (0 == gtk.g_file_load_contents(self.instance, toPtr(GCancellable, cancellable), &contents, &length, &etag, &error_instance)) .{ .Err = fromPtr(GError, error_instance).? } else .{ .Ok = .{ .contents = contents.?[0..length], .etag = etag } };
     }
 };
 
@@ -206,7 +223,6 @@ pub const GList = packed struct {
     }
 };
 
-// wrapper has the same memory layout as *anyopaque
 pub const GObject = packed struct {
     instance: *gtk.GObject,
     // ancestors and interfaces
@@ -224,39 +240,35 @@ pub const GObject = packed struct {
         return gtk.g_object_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "connect")) return true;
-        if (eql(u8, method, "unref")) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "connect")) return usize;
+        if (eql(u8, method, "unref")) return void;
+        return null;
     }
 
-    /// Call inherited method through comptime dispatch
-    pub fn callMethod(self: GObject, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: GObject, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "connect")) {
-            comptime assert(args.len == 4 or args.len == 5);
-            var ret = self.connect(args[0], args[1], args[2], args[3]);
-            if (comptime args.len == 5) {
-                args[4].* = ret;
-            }
+            comptime assert(args.len == 4);
+            return self.connect(args[0], args[1], args[2], args[3]);
         } else if (comptime eql(u8, method, "unref")) {
             comptime assert(args.len == 0);
-            self.deinit();
+            self.unref();
         } else {
             @compileError("No such method");
         }
     }
 
-    const ConnectFlags = struct {
-        after: bool = false,
-        swapped: bool = false,
-    };
+    pub const deinit = unref;
 
-    /// Connects a callback function to a signal for a particular object.
+    /// Connect a callback function to a signal for a particular object.
     /// `handler` should be a function pointer `*const fn(GObject, args...)`
     /// The first argument of `handler` is the object. To remove this, set `flags.swapped` to `true`.
-    /// The type is allowed to be any class type inherited from GObject. An unsafe cast is done implicitly.
+    /// The type is allowed to be any class type inherited from GObject.
     /// If the handler should be called after the default handler, set `flags.after` to `true`
-    pub fn connect(self: GObject, signal: [*:0]const u8, comptime handler: anytype, args: anytype, comptime flags: ConnectFlags) usize {
+    pub fn connect(self: GObject, signal: [*:0]const u8, comptime handler: anytype, args: anytype, comptime flags: struct {
+        after: bool = false,
+        swapped: bool = false,
+    }) usize {
         var closure = createZigClosure(handler, args, flags.swapped);
         const Closure = meta.Child(@TypeOf(closure));
         comptime var gflags = @enumToInt(GConnectFlags.Default);
@@ -275,7 +287,7 @@ pub const GObject = packed struct {
         return @intCast(usize, gtk.g_signal_connect_data(self.instance, signal, c_handler, data, destroy_data, @enumToInt(flags)));
     }
 
-    pub fn deinit(self: GObject) void {
+    pub fn unref(self: GObject) void {
         gtk.g_object_unref(self.instance);
     }
 };
@@ -299,40 +311,23 @@ pub const GApplication = packed struct {
         return gtk.g_application_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "run")) return true;
-        // interface method
-        // if (GActionGroup.hasMethod(method)) return true;
-        // if (GActionMap.hasMethod(method)) return true;
-        // parent class method
-        if (GObject.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "run")) return i32;
+        if (GObject.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: GApplication, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: GApplication, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "run")) {
-            comptime assert(args.len == 2 or args.len == 3);
-            var ret = self.run(args[0], args[1]);
-            if (comptime args.len == 3) {
-                args[2].* = ret;
-            }
-        }
-        // else if (comptime GActionGroup.hasMethod(method)) {
-        //     upCast(GActionGroup, self).callMethod(method, args);
-        //     return;
-        // }
-        // else if (comptime GActionMap.hasMethod(method)) {
-        //     upCast(GActionMap, self).callMethod(method, args);
-        //     return;
-        // }
-        else if (comptime GObject.hasMethod(method)) {
-            upCast(GObject, self).callMethod(method, args);
+            comptime assert(args.len == 2);
+            return self.run(args[0], args[1]);
+        } else if (comptime GObject.callMethodHelper(method)) |_| {
+            return upCast(GObject, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
     }
 
-    // cast c_int to i32
     pub fn run(self: GApplication, argc: i32, argv: ?[*:null]?[*:0]u8) i32 {
         return @intCast(i32, gtk.g_application_run(self.instance, @intCast(c_int, argc), @ptrCast([*c][*c]u8, argv)));
     }
@@ -355,14 +350,14 @@ pub const GCancellable = packed struct {
         return gtk.g_cancellable_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (GObject.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (GObject.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: GCancellable, comptime method: []const u8, args: anytype) void {
-        if (comptime GObject.hasMethod(method)) {
-            upCast(GObject, self).callMethod(method, args);
+    pub fn callMethod(self: GCancellable, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
+        if (comptime GObject.callMethodHelper(method)) |_| {
+            return upCast(GObject, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -386,14 +381,14 @@ pub const GInitiallyUnowned = packed struct {
         return gtk.g_initially_unowned_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (GObject.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (GObject.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: GInitiallyUnowned, comptime method: []const u8, args: anytype) void {
-        if (comptime GObject.hasMethod(method)) {
-            upCast(GObject, self).callMethod(method, args);
+    pub fn callMethod(self: GInitiallyUnowned, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
+        if (comptime GObject.callMethodHelper(method)) |_| {
+            return upCast(GObject, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -420,19 +415,18 @@ pub const Application = packed struct {
         return gtk.gtk_application_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "windows")) return true;
-        if (GApplication.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "windows")) return ?GList;
+        if (GApplication.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Application, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: Application, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "windows")) {
-            comptime assert(args.len == 1);
-            var ret = self.windows();
-            args[0].* = ret;
-        } else if (comptime GApplication.hasMethod(method)) {
-            upCast(GApplication, self).callMethod(method, args);
+            comptime assert(args.len == 0);
+            return self.windows();
+        } else if (comptime GApplication.callMethodHelper(method)) |_| {
+            return upCast(GApplication, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -475,14 +469,14 @@ pub const ApplicationWindow = packed struct {
         return gtk.gtk_application_window_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (Window.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (Window.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: ApplicationWindow, comptime method: []const u8, args: anytype) void {
-        if (comptime Window.hasMethod(method)) {
-            upCast(Window, self).callMethod(method, args);
+    pub fn callMethod(self: ApplicationWindow, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
+        if (comptime Window.callMethodHelper(method)) |_| {
+            return upCast(Window, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -516,18 +510,18 @@ pub const Box = packed struct {
         return gtk.gtk_box_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "append")) return true;
-        if (Widget.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "append")) return void;
+        if (Widget.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Box, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: Box, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "append")) {
             comptime assert(args.len == 1);
             self.append(args[0]);
-        } else if (comptime Widget.hasMethod(method)) {
-            upCast(Widget, self).callMethod(method, args);
+        } else if (comptime Widget.callMethodHelper(method)) |_| {
+            return upCast(Widget, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -559,26 +553,22 @@ pub const Builder = packed struct {
         return gtk.gtk_builder_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "addFromFile")) return true;
-        if (eql(u8, method, "object")) return true;
-        if (GObject.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "addFromFile")) return ?GError;
+        if (eql(u8, method, "object")) return ?GObject;
+        if (GObject.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Builder, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: Builder, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "addFromFile")) {
-            comptime assert(args.len == 1 or args.len == 2);
-            var ret = self.addFromFile(args[0]);
-            if (comptime args.len == 2) {
-                args[1].* = ret;
-            }
+            comptime assert(args.len == 1);
+            return self.addFromFile(args[0]);
         } else if (comptime eql(u8, method, "object")) {
-            comptime assert(args.len == 3);
-            var ret = self.object(args[0], args[1]);
-            args[2].* = ret;
-        } else if (comptime GObject.hasMethod(method)) {
-            upCast(GObject, self).callMethod(method, args);
+            comptime assert(args.len == 2);
+            return self.object(args[0], args[1]);
+        } else if (comptime GObject.callMethodHelper(method)) |_| {
+            return upCast(GObject, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -593,9 +583,8 @@ pub const Builder = packed struct {
         return if (0 == gtk.gtk_builder_add_from_file(self.instance, filename, &error_instance)) fromPtr(GError, error_instance).? else null;
     }
 
-    pub fn object(self: Builder, comptime T: type, name: [*:0]const u8) ?T {
-        var object_instance = fromPtr(GObject, gtk.gtk_builder_get_object(self.instance, name));
-        return if (object_instance) |some| dynamicCast(T, some.?) else null;
+    pub fn object(self: Builder, name: [*:0]const u8) ?GObject {
+        return fromPtr(GObject, gtk.gtk_builder_get_object(self.instance, name));
     }
 };
 
@@ -622,14 +611,14 @@ pub const Button = packed struct {
         return gtk.gtk_button_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (Widget.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (Widget.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Button, comptime method: []const u8, args: anytype) void {
-        if (comptime Widget.hasMethod(method)) {
-            upCast(Widget, self).callMethod(method, args);
+    pub fn callMethod(self: Button, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
+        if (comptime Widget.callMethodHelper(method)) |_| {
+            return upCast(Widget, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -663,17 +652,17 @@ pub const Grid = packed struct {
         return gtk.gtk_grid_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "attach")) return true;
-        if (Widget.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "attach")) return void;
+        if (Widget.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Grid, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: Grid, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "attach")) {
             comptime assert(args.len == 5);
             self.attach(args[0], args[1], args[2], args[3], args[4]);
-        } else if (comptime Widget.hasMethod(method)) {
+        } else if (comptime Widget.callMethodHelper(method)) |_| {
             upCast(Widget, self).callMethod(method, args);
         } else {
             @compileError("No such method");
@@ -711,21 +700,18 @@ pub const Stack = packed struct {
         return gtk.gtk_stack_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "addTitled")) return true;
-        if (Widget.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "addTitled")) return StackPage;
+        if (Widget.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Stack, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: Stack, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "addTitlde")) {
-            comptime assert(args.len == 3 or args.len == 4);
-            var ret = self.addTitled(args[0], args[1], args[2]);
-            if (comptime args.len == 4) {
-                args[3].* = ret;
-            }
-        } else if (comptime Widget.hasMethod(method)) {
-            upCast(Widget, self).callMethod(method, args);
+            comptime assert(args.len == 3);
+            return self.addTitled(args[0], args[1], args[2]);
+        } else if (comptime Widget.callMethodHelper(method, args)) |_| {
+            return upCast(Widget, self).callMethod(method);
         } else {
             @compileError("No such method");
         }
@@ -754,14 +740,16 @@ pub const StackPage = packed struct {
         return gtk.gtk_stack_page_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (GObject.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (GObject.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: StackPage, comptime method: []const u8, args: anytype) void {
-        if (comptime GObject.hasMethod(method)) {
-            upCast(GObject, self).callMethod(method, args);
+    pub fn callMethod(self: StackPage, comptime method: []const u8, args: anytype) callMethodHelper(
+        method,
+    ).? {
+        if (comptime GObject.callMethodHelper(method)) |_| {
+            return upCast(GObject, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -790,18 +778,18 @@ pub const ScrolledWindow = packed struct {
         return gtk.gtk_scrolled_window_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "setChild")) return true;
-        if (Widget.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "setChild")) return void;
+        if (Widget.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: ScrolledWindow, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: ScrolledWindow, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "setChild")) {
             comptime assert(args.len == 1);
             self.setChild(args[0]);
-        } else if (comptime Widget.hasMethod(method)) {
-            upCast(Widget, self).callMethod(method, args);
+        } else if (comptime Widget.callMethodHelper(method)) |_| {
+            return upCast(Widget, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -833,18 +821,18 @@ pub const TextBuffer = packed struct {
         return gtk.gtk_text_buffer_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "setText")) return true;
-        if (GObject.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "setText")) return void;
+        if (GObject.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: TextBuffer, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: TextBuffer, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "setText")) {
             comptime assert(args.len == 2);
             self.setText(args[0], args[1]);
-        } else if (comptime GObject.hasMethod(method)) {
-            upCast(GObject, self).callMethod(method, args);
+        } else if (comptime GObject.callMethodHelper(method)) |_| {
+            return upCast(GObject, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -879,22 +867,22 @@ pub const TextView = packed struct {
         return gtk.gtk_text_view_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "setCursorVisible")) return true;
-        if (eql(u8, method, "setEditable")) return true;
-        if (Widget.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "setCursorVisible")) return void;
+        if (eql(u8, method, "setEditable")) return void;
+        if (Widget.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: TextView, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: TextView, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "setCursorVisible")) {
             comptime assert(args.len == 1);
             self.setCursorVisible(args[0]);
         } else if (comptime eql(u8, method, "setEditable")) {
             comptime assert(args.len == 1);
             self.setEditable(args[0]);
-        } else if (comptime Widget.hasMethod(method)) {
-            upCast(Widget, self).callMethod(method, args);
+        } else if (comptime Widget.callMethodHelper(method)) |_| {
+            return upCast(Widget, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -938,18 +926,18 @@ pub const Widget = packed struct {
         return gtk.gtk_widget_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "initTemplate")) return true;
-        if (eql(u8, method, "setHalign")) return true;
-        if (eql(u8, method, "setHexpand")) return true;
-        if (eql(u8, method, "setValign")) return true;
-        if (eql(u8, method, "setVexpand")) return true;
-        if (eql(u8, method, "show")) return true;
-        if (GInitiallyUnowned.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "initTemplate")) return void;
+        if (eql(u8, method, "setHalign")) return void;
+        if (eql(u8, method, "setHexpand")) return void;
+        if (eql(u8, method, "setValign")) return void;
+        if (eql(u8, method, "setVexpand")) return void;
+        if (eql(u8, method, "show")) return void;
+        if (GInitiallyUnowned.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Widget, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: Widget, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "initTemplate")) {
             comptime assert(args.len == 0);
             self.initTemplate();
@@ -968,8 +956,8 @@ pub const Widget = packed struct {
         } else if (comptime eql(u8, method, "show")) {
             comptime assert(args.len == 0);
             self.show();
-        } else if (comptime GInitiallyUnowned.hasMethod(method)) {
-            upCast(GInitiallyUnowned, self).callMethod(method, args);
+        } else if (comptime GInitiallyUnowned.callMethodHelper(method)) |_| {
+            return upCast(GInitiallyUnowned, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
@@ -1025,21 +1013,21 @@ pub const Window = packed struct {
         return gtk.gtk_window_get_type();
     }
 
-    pub fn hasMethod(method: []const u8) bool {
-        if (eql(u8, method, "destroy")) return true;
-        if (eql(u8, method, "present")) return true;
-        if (eql(u8, method, "setApplication")) return true;
-        if (eql(u8, method, "setChild")) return true;
-        if (eql(u8, method, "setDefaultSize")) return true;
-        if (eql(u8, method, "setTitle")) return true;
-        if (Widget.hasMethod(method)) return true;
-        return false;
+    pub fn callMethodHelper(comptime method: []const u8) ?type {
+        if (eql(u8, method, "destroy")) return void;
+        if (eql(u8, method, "present")) return void;
+        if (eql(u8, method, "setApplication")) return void;
+        if (eql(u8, method, "setChild")) return void;
+        if (eql(u8, method, "setDefaultSize")) return void;
+        if (eql(u8, method, "setTitle")) return void;
+        if (Widget.callMethodHelper(method)) |some| return some;
+        return null;
     }
 
-    pub fn callMethod(self: Window, comptime method: []const u8, args: anytype) void {
+    pub fn callMethod(self: Window, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime eql(u8, method, "destroy")) {
             comptime assert(args.len == 0);
-            self.deinit();
+            self.destroy();
         } else if (comptime eql(u8, method, "present")) {
             comptime assert(args.len == 0);
             self.present();
@@ -1055,14 +1043,16 @@ pub const Window = packed struct {
         } else if (comptime eql(u8, method, "setTitle")) {
             comptime assert(args.len == 1);
             self.setTitle(args[0]);
-        } else if (comptime Widget.hasMethod(method)) {
-            upCast(Widget, self).callMethod(method, args);
+        } else if (comptime Widget.callMethodHelper(method)) |_| {
+            return upCast(Widget, self).callMethod(method, args);
         } else {
             @compileError("No such method");
         }
     }
 
-    pub fn deinit(self: Window) void {
+    pub const deinit = destroy;
+
+    pub fn destroy(self: Window) void {
         gtk.gtk_window_destroy(self.instance);
     }
 

@@ -7,5 +7,5 @@ const ExampleApp = example_app.ExampleApp;
 
 pub fn main() void {
     var app = ExampleApp.new();
-    app.callMethod("run", .{ @intCast(i32, std.os.argv.len), @ptrCast(?[*:null]?[*:0]u8, std.os.argv.ptr) });
+    _ = app.callMethod("run", .{ @intCast(i32, std.os.argv.len), @ptrCast(?[*:null]?[*:0]u8, std.os.argv.ptr) });
 }
