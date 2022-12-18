@@ -191,8 +191,9 @@ const Static = struct {
     var type_id: GType = 0;
 };
 
-const CustomWidgetClass = extern struct {
-    // required
+// extern struct guarantees in-memory layout and compatitablility with C ABI
+pub const CustomWidgetClass = extern struct {
+    // required as the first field, this is how gobject type system works
     parent_class: ParentClass,
     // private fields
     // ...
@@ -204,8 +205,8 @@ const CustomWidgetClass = extern struct {
 };
 
 const CustomWidgetImpl = extern struct {
-    // required
-    parent: Parent,
+    // required as the first field
+    parent: Parent.cType(),
     // private fields
     // ...
 

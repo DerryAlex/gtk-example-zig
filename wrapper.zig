@@ -745,9 +745,7 @@ pub const StackPage = packed struct {
         return null;
     }
 
-    pub fn callMethod(self: StackPage, comptime method: []const u8, args: anytype) callMethodHelper(
-        method,
-    ).? {
+    pub fn callMethod(self: StackPage, comptime method: []const u8, args: anytype) callMethodHelper(method).? {
         if (comptime GObject.callMethodHelper(method)) |_| {
             return upCast(GObject, self).callMethod(method, args);
         } else {
@@ -838,7 +836,7 @@ pub const TextBuffer = packed struct {
         }
     }
 
-    // If len is -1, text must be nul-terminated
+    /// If len is -1, text must be nul-terminated
     pub fn setText(self: TextBuffer, text: [*]const u8, len: i32) void {
         gtk.gtk_text_buffer_set_text(self.instance, text, @intCast(c_int, len));
     }

@@ -27,7 +27,7 @@ const Static = struct {
     var type_id: GType = 0;
 };
 
-const ExampleAppWindowClass = extern struct {
+pub const ExampleAppWindowClass = extern struct {
     parent_class: gtk.GtkApplicationWindowClass,
 
     pub fn init(self: *ExampleAppWindowClass) callconv(.C) void {
@@ -37,7 +37,7 @@ const ExampleAppWindowClass = extern struct {
 };
 
 const ExampleAppWindowImpl = extern struct {
-    parent: gtk.GtkApplicationWindow,
+    parent: ApplicationWindow.cType(),
     stack: Stack,
 
     pub fn init(win: ExampleAppWindow) callconv(.C) void {

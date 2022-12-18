@@ -28,7 +28,7 @@ const Static = struct {
     var type_id: GType = 0;
 };
 
-const ExampleAppClass = extern struct {
+pub const ExampleAppClass = extern struct {
     parent_class: gtk.GtkApplicationClass,
 
     pub fn init(self: *ExampleAppClass) callconv(.C) void {
@@ -40,7 +40,7 @@ const ExampleAppClass = extern struct {
 };
 
 const ExampleAppImpl = extern struct {
-    parent: gtk.GtkApplication,
+    parent: Application.cType(),
 
     pub fn activate_override(app: *ExampleApp.cType()) callconv(.C) void {
         activate(ExampleApp{ .instance = app });
